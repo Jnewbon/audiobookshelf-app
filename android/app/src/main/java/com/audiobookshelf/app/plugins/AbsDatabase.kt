@@ -25,7 +25,7 @@ class AbsDatabase : Plugin() {
   data class LocalMediaProgressPayload(val value:List<LocalMediaProgress>)
   data class LocalLibraryItemsPayload(val value:List<LocalLibraryItem>)
   data class LocalFoldersPayload(val value:List<LocalFolder>)
-  data class ServerConnConfigPayload(val id:String?, val index:Int, val name:String?, val userId:String, val username:String, val token:String, val address:String?, val customHeaders:Map<String,String>?)
+  data class ServerConnConfigPayload(val id:String?, val index:Int, val name:String?, val userId:String, val username:String, val token:String, val address:String?, val customHeaders:Map<String,String>?, val clientCert: String?, val clientKey: String?)
 
   override fun load() {
     mainActivity = (activity as MainActivity)
@@ -35,6 +35,7 @@ class AbsDatabase : Plugin() {
     DeviceManager.dbManager.cleanLocalLibraryItems()
   }
 
+  @Suppress("unused")
   @PluginMethod
   fun getDeviceData(call:PluginCall) {
     GlobalScope.launch(Dispatchers.IO) {
@@ -43,6 +44,7 @@ class AbsDatabase : Plugin() {
     }
   }
 
+  @Suppress("unused")
   @PluginMethod
   fun getLocalFolders(call:PluginCall) {
     GlobalScope.launch(Dispatchers.IO) {
@@ -405,6 +407,50 @@ class AbsDatabase : Plugin() {
       DeviceManager.deviceData.deviceSettings = newDeviceSettings
       DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
       call.resolve(JSObject(jacksonMapper.writeValueAsString(DeviceManager.deviceData)))
+    }
+  }
+
+  /**
+   * @brief Sets of the process to select a user credentials stored in the system settings
+   */
+  @PluginMethod
+  fun selectClientCertificate(call: PluginCall) {
+    Log.d(tag, "selectClientCertificate ${call.data}")
+    apiHandler.selectClientCert()
+    getClientCertificate(call)
+  }
+
+  /**
+   * @brief Sets of the process to install a user credential in the system settings
+   */
+  @PluginMethod
+  fun installClientCertificate(call: PluginCall) {
+    Log.d(tag, "installClientCertificate ${call.data}")
+    apiHandler.installClientCert()
+    call.resolve()
+  }
+
+  /**
+   * @brief Gets the certificate of the user credentials that have been selected
+   */
+  @PluginMethod
+  fun getClientCertificate(call: PluginCall) {
+    Log.d(tag, "getClientCertificate ${call.data}")
+    val cert = apiHandler.getClientCert()
+    GlobalScope.launch(Dispatchers.IO) {
+      call.resolve(JSObject(jacksonMapper.writeValueAsString(cert)))
+    }
+  }
+
+  /**
+   * @brief Gets the private key of the user credentials that have been selected
+   */
+  @PluginMethod
+  fun getClientPrivateKey(call: PluginCall) {
+    Log.d(tag, "getClientPrivateKey ${call.data}")
+    val key = apiHandler.getClientKey()
+    GlobalScope.launch(Dispatchers.IO) {
+      call.resolve(JSObject(jacksonMapper.writeValueAsString(key)))
     }
   }
 }

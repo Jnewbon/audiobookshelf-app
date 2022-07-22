@@ -1,9 +1,16 @@
 package com.audiobookshelf.app.server
 
+import android.app.Activity
 import android.content.Context
+import android.content.ContextWrapper
+import android.content.SharedPreferences
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
+import android.security.KeyChain
+import android.security.KeyChainAliasCallback
+import android.security.keystore.KeyProperties
 import android.util.Log
+import com.anggrayudi.storage.extension.startActivitySafely
 import com.audiobookshelf.app.data.*
 import com.audiobookshelf.app.device.DeviceManager
 import com.audiobookshelf.app.player.MediaProgressSyncData
@@ -19,19 +26,108 @@ import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONException
 import org.json.JSONObject
 import java.io.IOException
+import java.net.Socket
+import java.security.Principal
+import java.security.PrivateKey
+import java.security.cert.X509Certificate
 import java.util.concurrent.TimeUnit
+import javax.net.ssl.SSLContext
+import javax.net.ssl.TrustManagerFactory
+import javax.net.ssl.X509KeyManager
+import javax.net.ssl.X509TrustManager
+
 
 class ApiHandler(var ctx:Context) {
   val tag = "ApiHandler"
 
-  private var defaultClient = OkHttpClient()
-  private var pingClient = OkHttpClient.Builder().callTimeout(3, TimeUnit.SECONDS).build()
+  private var _defaultClient: OkHttpClient? = null
+  private var _pingClient: OkHttpClient? = null
+
   var jacksonMapper = jacksonObjectMapper().enable(JsonReadFeature.ALLOW_UNESCAPED_CONTROL_CHARS.mappedFeature())
+
+  var clientCertAlias: String? = "AbsClientCert"
+
+  var storageSharedPreferences: SharedPreferences? = null
 
   data class LocalMediaProgressSyncPayload(val localMediaProgress:List<LocalMediaProgress>)
   @JsonIgnoreProperties(ignoreUnknown = true)
   data class MediaProgressSyncResponsePayload(val numServerProgressUpdates:Int, val localProgressUpdates:List<LocalMediaProgress>)
   data class LocalMediaProgressSyncResultsPayload(var numLocalMediaProgressForServer:Int, var numServerProgressUpdates:Int, var numLocalProgressUpdates:Int)
+
+  private var x509km = object : X509KeyManager {
+    override fun getClientAliases(
+      keyType: String?,
+      issuers: Array<Principal>
+    ): Array<String> {
+      return arrayOf(clientCertAlias!!)
+    }
+
+    override fun chooseClientAlias(
+      keyType: Array<out String>?,
+      issuers: Array<out Principal>?,
+      socket: Socket?
+    ): String {
+      return clientCertAlias!!
+    }
+
+    override fun getServerAliases(
+      keyType: String?,
+      issuers: Array<Principal>
+    ): Array<String> {
+      return arrayOf()
+    }
+
+    override fun chooseServerAlias(
+      keyType: String?,
+      issuers: Array<Principal>,
+      socket: Socket
+    ): String {
+      return ""
+    }
+
+    override fun getCertificateChain(alias: String?): Array<X509Certificate> {
+      return KeyChain.getCertificateChain(ctx, clientCertAlias!!)!!
+    }
+
+    override fun getPrivateKey(alias: String?): PrivateKey {
+      return KeyChain.getPrivateKey(ctx, clientCertAlias!!)!!
+    }
+  }
+
+  private fun getDefaultClient(): OkHttpClient {
+    if (_defaultClient == null) {
+      if (clientCertAlias != null) {
+        val sslContext = SSLContext.getInstance("TLS")
+        val tms = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).trustManagers
+        sslContext.init(arrayOf(x509km), tms, null)
+
+        _defaultClient = OkHttpClient.Builder()
+          .sslSocketFactory(sslContext.socketFactory, tms[0] as X509TrustManager)
+          .build()
+      } else {
+        _defaultClient = OkHttpClient()
+      }
+    }
+    return _defaultClient!!
+  }
+
+  private fun getDefaultPingClient(): OkHttpClient {
+    if (_pingClient == null) {
+      if (clientCertAlias != null) {
+        val sslContext = SSLContext.getInstance("TLS")
+        val tms = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm()).trustManagers
+        sslContext.init(arrayOf(x509km), tms, null)
+
+        _pingClient = OkHttpClient.Builder().callTimeout(3, TimeUnit.SECONDS)
+          .sslSocketFactory(sslContext.socketFactory, tms[0] as X509TrustManager)
+          .build()
+      } else {
+        _pingClient = OkHttpClient.Builder().callTimeout(3, TimeUnit.SECONDS).build()
+      }
+    }
+    return _pingClient!!
+  }
+
 
   fun getRequest(endpoint:String, httpClient:OkHttpClient?, config:ServerConnectionConfig?, cb: (JSObject) -> Unit) {
     val address = config?.address ?: DeviceManager.serverAddress
@@ -80,7 +176,7 @@ class ApiHandler(var ctx:Context) {
   }
 
   fun makeRequest(request:Request, httpClient:OkHttpClient?, cb: (JSObject) -> Unit) {
-    val client = httpClient ?: defaultClient
+    val client = httpClient ?: getDefaultClient()
     client.newCall(request).enqueue(object : Callback {
       override fun onFailure(call: Call, e: IOException) {
         Log.d(tag, "FAILURE TO CONNECT")
@@ -297,7 +393,7 @@ class ApiHandler(var ctx:Context) {
     val endpoint = if(episodeId.isNullOrEmpty()) "/api/me/progress/$libraryItemId" else "/api/me/progress/$libraryItemId/$episodeId"
 
     // TODO: Using ping client here allows for shorter timeout (3 seconds), maybe rename or make diff client for requests requiring quicker response
-    getRequest(endpoint, pingClient, serverConnectionConfig) {
+    getRequest(endpoint, getDefaultPingClient(), serverConnectionConfig) {
       if (it.has("error")) {
         Log.e(tag, "getMediaProgress: Failed to get progress")
         cb(null)
@@ -322,7 +418,7 @@ class ApiHandler(var ctx:Context) {
 
   fun pingServer(config:ServerConnectionConfig, cb: (Boolean) -> Unit) {
     Log.d(tag, "pingServer: Pinging ${config.address}")
-    getRequest("/ping", pingClient, config) {
+    getRequest("/ping", getDefaultPingClient(), config) {
       val success = it.getString("success")
       if (success.isNullOrEmpty()) {
         Log.d(tag, "pingServer: Ping ${config.address} Failed")
@@ -332,5 +428,51 @@ class ApiHandler(var ctx:Context) {
         cb(true)
       }
     }
+  }
+
+  fun installClientCert() {
+    val intent = KeyChain.createInstallIntent()
+    intent.putExtra(KeyChain.EXTRA_NAME, clientCertAlias);
+    getActivity(ctx)?.startActivitySafely(intent)
+  }
+
+  fun selectClientCert() {
+    val keyChainAliasCallback = KeyChainAliasCallback { alias ->
+      clientCertAlias = alias
+      Log.d(tag, "Selected Cert: $alias")
+    }
+    val act = getActivity(ctx)
+    if (act != null) {
+      KeyChain.choosePrivateKeyAlias(
+        act,
+        keyChainAliasCallback,
+        arrayOf(KeyProperties.KEY_ALGORITHM_RSA, "DSA"),
+        null, null, -1, ""
+      )
+    }
+  }
+
+  fun getClientCert(): X509Certificate {
+    return x509km.getCertificateChain(clientCertAlias).first()
+  }
+
+  fun getClientKey(): PrivateKey {
+    return x509km.getPrivateKey(clientCertAlias)
+  }
+
+  /**
+   * Gets the activity from a context if possible
+   */
+  fun getActivity(context: Context?): Activity? {
+    if (context == null) {
+      return null
+    } else if (context is ContextWrapper) {
+      return if (context is Activity) {
+        context
+      } else {
+        getActivity(context.baseContext)
+      }
+    }
+    return null
   }
 }

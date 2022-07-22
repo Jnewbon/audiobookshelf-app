@@ -108,8 +108,9 @@ export default {
       }
 
       console.log(`[default] Got server config, attempt authorize ${serverConfig.address}`)
+      console.log(`pfx is ${JSON.stringify(serverConfig)}`)
 
-      var authRes = await this.$axios.$post(`${serverConfig.address}/api/authorize`, null, { headers: { Authorization: `Bearer ${serverConfig.token}` } }).catch((error) => {
+      var authRes = await this.$axios.$post(`${serverConfig.address}/api/authorize`, null, { headers: { Authorization: `Bearer ${serverConfig.token}`, cert: serverConfig.clientCredAlias } }).catch((error) => {
         console.error('[Server] Server auth failed', error)
         var errorMsg = error.response ? error.response.data || 'Unknown Error' : 'Unknown Error'
         this.error = errorMsg

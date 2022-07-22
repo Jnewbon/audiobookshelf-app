@@ -30,6 +30,7 @@ class AbsDatabaseWeb extends WebPlugin {
       ssc.userId = serverConnectionConfig.userId
       ssc.username = serverConnectionConfig.username
       ssc.customHeaders = serverConnectionConfig.customHeaders || {}
+      ssc.clientCredAlias = serverConnectionConfig.clientCredAlias || {}
       localStorage.setItem('device', JSON.stringify(deviceData))
     } else {
       ssc = {
@@ -40,7 +41,8 @@ class AbsDatabaseWeb extends WebPlugin {
         username: serverConnectionConfig.username,
         address: serverConnectionConfig.address,
         token: serverConnectionConfig.token,
-        customHeaders: serverConnectionConfig.customHeaders || {}
+        customHeaders: serverConnectionConfig.customHeaders || {},
+        clientCredAlias: serverConnectionConfig.clientCredAlias || {}
       }
       deviceData.serverConnectionConfigs.push(ssc)
       deviceData.lastServerConnectionConfigId = ssc.id

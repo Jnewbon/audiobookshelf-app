@@ -18,6 +18,7 @@ import com.audiobookshelf.app.player.PlayerNotificationService
 import com.audiobookshelf.app.plugins.AbsAudioPlayer
 import com.audiobookshelf.app.plugins.AbsDownloader
 import com.audiobookshelf.app.plugins.AbsFileSystem
+import com.audiobookshelf.app.server.ApiHandler
 import com.getcapacitor.BridgeActivity
 
 

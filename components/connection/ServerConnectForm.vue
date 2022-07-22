@@ -84,7 +84,8 @@ export default {
       serverConfig: {
         address: null,
         username: null,
-        customHeaders: null
+        customHeaders: null,
+        clientCertPfx: null
       },
       password: null,
       error: null,
@@ -226,16 +227,27 @@ export default {
         })
     },
     requestServerLogin() {
+      let c = 0;
       const options = {}
       if (this.serverConfig.customHeaders) {
         options.headers = this.serverConfig.customHeaders
       }
+
+      let bytes = [];
+      var hex = "testcertbytes"
+
+      for (; c < hex.length; c += 2)
+        bytes.push(parseInt(hex.substr(c, 2), 16));
+
+      options.pfx = bytes
+      console.error('pfx is ', options.pfx)
+
       return this.$axios
         .$post(`${this.serverConfig.address}/login`, { username: this.serverConfig.username, password: this.password }, options)
         .then((data) => {
           if (!data.user) {
             console.error(data.error)
-            this.error = data.error || 'Unknown Error'
+            this.error = data.error || options.pfx
             return false
           }
           return data

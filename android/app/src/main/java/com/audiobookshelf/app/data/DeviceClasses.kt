@@ -13,7 +13,9 @@ data class ServerConnectionConfig(
   var userId:String,
   var username:String,
   var token:String,
-  var customHeaders:Map<String, String>?
+  var customHeaders:Map<String, String>?,
+  var clientCert: String? = null,
+  var clientKey: String? = null
 )
 
 data class DeviceSettings(
