@@ -98,6 +98,122 @@ class SecureStorage(private val context: Context) {
         return sharedPrefs.contains("refresh_token_$serverConnectionId")
     }
 
+    /**
+     * Encrypts and stores a client certificate PEM for a specific server connection
+     */
+    fun storeClientCertificate(serverConnectionId: String, certPem: String): Boolean {
+        return try {
+            val key = getOrCreateKey()
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val encryptedBytes = cipher.doFinal(certPem.toByteArray(Charsets.UTF_8))
+            val combined = cipher.iv + encryptedBytes
+            val encoded = Base64.encodeToString(combined, Base64.DEFAULT)
+            val sharedPrefs = context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE)
+            sharedPrefs.edit().putString("client_cert_$serverConnectionId", encoded).apply()
+            Log.d(TAG, "Successfully stored encrypted client certificate for server: $serverConnectionId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to store client certificate for server: $serverConnectionId", e)
+            false
+        }
+    }
+
+    /**
+     * Retrieves and decrypts a client certificate PEM for a specific server connection
+     */
+    fun getClientCertificate(serverConnectionId: String): String? {
+        return try {
+            val sharedPrefs = context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE)
+            val encoded = sharedPrefs.getString("client_cert_$serverConnectionId", null) ?: return null
+            val combined = Base64.decode(encoded, Base64.DEFAULT)
+            val iv = combined.copyOfRange(0, IV_LENGTH)
+            val encryptedBytes = combined.copyOfRange(IV_LENGTH, combined.size)
+            val key = getOrCreateKey()
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            val spec = GCMParameterSpec(TAG_LENGTH, iv)
+            cipher.init(Cipher.DECRYPT_MODE, key, spec)
+            val decryptedBytes = cipher.doFinal(encryptedBytes)
+            String(decryptedBytes, Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to retrieve client certificate for server: $serverConnectionId", e)
+            null
+        }
+    }
+
+    /**
+     * Encrypts and stores a client private key PEM for a specific server connection
+     */
+    fun storeClientPrivateKey(serverConnectionId: String, keyPem: String): Boolean {
+        return try {
+            val key = getOrCreateKey()
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            cipher.init(Cipher.ENCRYPT_MODE, key)
+            val encryptedBytes = cipher.doFinal(keyPem.toByteArray(Charsets.UTF_8))
+            val combined = cipher.iv + encryptedBytes
+            val encoded = Base64.encodeToString(combined, Base64.DEFAULT)
+            val sharedPrefs = context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE)
+            sharedPrefs.edit().putString("client_key_$serverConnectionId", encoded).apply()
+            Log.d(TAG, "Successfully stored encrypted client private key for server: $serverConnectionId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to store client private key for server: $serverConnectionId", e)
+            false
+        }
+    }
+
+    /**
+     * Retrieves and decrypts a client private key PEM for a specific server connection
+     */
+    fun getClientPrivateKey(serverConnectionId: String): String? {
+        return try {
+            val sharedPrefs = context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE)
+            val encoded = sharedPrefs.getString("client_key_$serverConnectionId", null) ?: return null
+            val combined = Base64.decode(encoded, Base64.DEFAULT)
+            val iv = combined.copyOfRange(0, IV_LENGTH)
+            val encryptedBytes = combined.copyOfRange(IV_LENGTH, combined.size)
+            val key = getOrCreateKey()
+            val cipher = Cipher.getInstance(TRANSFORMATION)
+            val spec = GCMParameterSpec(TAG_LENGTH, iv)
+            cipher.init(Cipher.DECRYPT_MODE, key, spec)
+            val decryptedBytes = cipher.doFinal(encryptedBytes)
+            String(decryptedBytes, Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to retrieve client private key for server: $serverConnectionId", e)
+            null
+        }
+    }
+
+    /**
+     * Removes a client certificate for a specific server connection
+     */
+    fun removeClientCertificate(serverConnectionId: String): Boolean {
+        return try {
+            val sharedPrefs = context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE)
+            sharedPrefs.edit().remove("client_cert_$serverConnectionId").apply()
+            Log.d(TAG, "Successfully removed client certificate for server: $serverConnectionId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove client certificate for server: $serverConnectionId", e)
+            false
+        }
+    }
+
+    /**
+     * Removes a client private key for a specific server connection
+     */
+    fun removeClientPrivateKey(serverConnectionId: String): Boolean {
+        return try {
+            val sharedPrefs = context.getSharedPreferences("SecureStorage", Context.MODE_PRIVATE)
+            sharedPrefs.edit().remove("client_key_$serverConnectionId").apply()
+            Log.d(TAG, "Successfully removed client private key for server: $serverConnectionId")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to remove client private key for server: $serverConnectionId", e)
+            false
+        }
+    }
+
     private fun getOrCreateKey(): SecretKey {
         return if (keyStore.containsAlias(KEY_ALIAS)) {
             keyStore.getKey(KEY_ALIAS, null) as SecretKey

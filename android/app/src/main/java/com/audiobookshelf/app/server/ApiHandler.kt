@@ -15,6 +15,7 @@ import com.audiobookshelf.app.models.User
 import com.audiobookshelf.app.BuildConfig
 import com.audiobookshelf.app.plugins.AbsLogger
 import com.audiobookshelf.app.managers.SecureStorage
+import com.audiobookshelf.app.network.MtlsHelper
 import com.fasterxml.jackson.annotation.JsonIgnoreProperties
 import com.fasterxml.jackson.core.json.JsonReadFeature
 import com.fasterxml.jackson.module.kotlin.jacksonObjectMapper
@@ -53,15 +54,60 @@ class ApiHandler(var ctx:Context) {
   data class LocalSessionSyncResult(val id:String, val success:Boolean, val progressSynced:Boolean?, val error:String?)
   data class LocalSessionsSyncResponsePayload(val results:List<LocalSessionSyncResult>)
 
+  // Cache for mTLS clients per serverConnectionId
+  private val mtlsClientCache = mutableMapOf<String, OkHttpClient>()
+
+  /**
+   * Store client certificate and private key PEM for a server connection
+   */
+  fun setMtlsCredentials(serverConnectionId: String, certPem: String, keyPem: String): Boolean {
+    val certStored = secureStorage.storeClientCertificate(serverConnectionId, certPem)
+    val keyStored = secureStorage.storeClientPrivateKey(serverConnectionId, keyPem)
+    // Invalidate cache for this server
+    mtlsClientCache.remove(serverConnectionId)
+    return certStored && keyStored
+  }
+
+  /**
+   * Remove client certificate and private key PEM for a server connection
+   */
+  fun removeMtlsCredentials(serverConnectionId: String) {
+    secureStorage.removeClientCertificate(serverConnectionId)
+    secureStorage.removeClientPrivateKey(serverConnectionId)
+    mtlsClientCache.remove(serverConnectionId)
+  }
+
+  /**
+   * Get an OkHttpClient with mTLS enabled for the given server connection, or null if not available
+   */
+  private fun getMtlsClientIfAvailable(serverConnectionId: String): OkHttpClient? {
+    if (mtlsClientCache.containsKey(serverConnectionId)) {
+      return mtlsClientCache[serverConnectionId]
+    }
+    val certPem = secureStorage.getClientCertificate(serverConnectionId)
+    val keyPem = secureStorage.getClientPrivateKey(serverConnectionId)
+    if (!certPem.isNullOrEmpty() && !keyPem.isNullOrEmpty()) {
+      val client = MtlsHelper.buildMtlsOkHttpClient(ctx, certPem, keyPem)
+      mtlsClientCache[serverConnectionId] = client
+      return client
+    }
+    return null
+  }
+
   private fun getRequest(endpoint:String, httpClient:OkHttpClient?, config:ServerConnectionConfig?, cb: (JSObject) -> Unit) {
     val address = config?.address ?: DeviceManager.serverAddress
     val token = config?.token ?: DeviceManager.token
+    val serverConnectionId = config?.id ?: DeviceManager.serverConnectionConfigId
+
+    // Use mTLS client if available for this server
+    val mtlsClient = getMtlsClientIfAvailable(serverConnectionId)
+    val clientToUse = httpClient ?: mtlsClient ?: defaultClient
 
     try {
       val request = Request.Builder()
         .url("${address}$endpoint").addHeader("Authorization", "Bearer $token")
         .build()
-      makeRequest(request, httpClient, cb)
+      makeRequest(request, clientToUse, cb)
     } catch(e: Exception) {
       e.printStackTrace()
       val jsobj = JSObject()
@@ -73,15 +119,19 @@ class ApiHandler(var ctx:Context) {
   private fun postRequest(endpoint:String, payload: JSObject?, config:ServerConnectionConfig?, cb: (JSObject) -> Unit) {
     val address = config?.address ?: DeviceManager.serverAddress
     val token = config?.token ?: DeviceManager.token
+    val serverConnectionId = config?.id ?: DeviceManager.serverConnectionConfigId
     val mediaType = "application/json; charset=utf-8".toMediaType()
     val requestBody = payload?.toString()?.toRequestBody(mediaType) ?: EMPTY_REQUEST
     val requestUrl = "${address}$endpoint"
     Log.d(tag, "postRequest to $requestUrl")
+    // Use mTLS client if available for this server
+    val mtlsClient = getMtlsClientIfAvailable(serverConnectionId)
+    val clientToUse = mtlsClient ?: defaultClient
     try {
       val request = Request.Builder().post(requestBody)
         .url(requestUrl).addHeader("Authorization", "Bearer ${token}")
         .build()
-      makeRequest(request, null, cb)
+      makeRequest(request, clientToUse, cb)
     } catch(e: Exception) {
       e.printStackTrace()
       val jsobj = JSObject()
@@ -93,11 +143,15 @@ class ApiHandler(var ctx:Context) {
   private fun patchRequest(endpoint:String, payload: JSObject, cb: (JSObject) -> Unit) {
     val mediaType = "application/json; charset=utf-8".toMediaType()
     val requestBody = payload.toString().toRequestBody(mediaType)
+    val serverConnectionId = DeviceManager.serverConnectionConfigId
+    // Use mTLS client if available for this server
+    val mtlsClient = getMtlsClientIfAvailable(serverConnectionId)
+    val clientToUse = mtlsClient ?: defaultClient
     try {
       val request = Request.Builder().patch(requestBody)
         .url("${DeviceManager.serverAddress}$endpoint").addHeader("Authorization", "Bearer ${DeviceManager.token}")
         .build()
-      makeRequest(request, null, cb)
+      makeRequest(request, clientToUse, cb)
     } catch(e: Exception) {
       e.printStackTrace()
       val jsobj = JSObject()

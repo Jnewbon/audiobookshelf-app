@@ -109,7 +109,8 @@ export default {
         address: null,
         version: null,
         username: null,
-        customHeaders: null
+        customHeaders: null,
+        clientCertPfx: null
       },
       password: null,
       error: null,
