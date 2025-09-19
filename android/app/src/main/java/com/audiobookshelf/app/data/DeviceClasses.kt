@@ -43,7 +43,9 @@ data class ServerConnectionConfig(
   var userId:String,
   var username:String,
   var token:String,
-  var customHeaders:Map<String, String>?
+  var customHeaders:Map<String, String>?,
+  // mTLS client certificate alias (Android KeyChain) optional
+  var clientCertAlias:String? = null
 )
 
 @JsonIgnoreProperties(ignoreUnknown = true)
@@ -218,4 +220,3 @@ data class DeviceData(
     }
   }
 }
-

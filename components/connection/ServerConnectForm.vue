@@ -39,6 +39,46 @@
           <div class="flex justify-end items-center mt-6">
             <ui-btn :disabled="processing || !networkConnected" type="submit" :padding-x="3" class="h-10">{{ networkConnected ? $strings.ButtonSubmit : $strings.MessageNoNetworkConnection }}</ui-btn>
           </div>
+          <!-- mTLS client certificate selection (Android Only) -->
+          <div v-if="$systemMtlsHttp && $systemMtlsHttp.supported()" class="mb-3">
+            <div class="flex items-center text-xs text-fg-muted mb-1">
+              <span class="material-symbols text-base mr-1">verified_user</span>
+              <span>Mutual TLS (Client Cert)</span>
+            </div>
+            <div class="flex items-center space-x-2">
+              <ui-btn
+                v-if="!serverConfig.clientCertAlias"
+                :disabled="processing"
+                size="xs"
+                :padding-x="2"
+                :padding-y="1"
+                @click="selectClientCert"
+              >Select Cert</ui-btn>
+              <template v-else>
+                <p
+                  class="text-xs text-success truncate max-w-[10rem]"
+                  :title="serverConfig.clientCertAlias"
+                >{{ serverConfig.clientCertAlias }}</p>
+                <ui-btn
+                  :disabled="processing"
+                  size="xs"
+                  color="secondary"
+                  :padding-x="2"
+                  :padding-y="1"
+                  @click="reselectClientCert"
+                >Change</ui-btn>
+                <ui-btn
+                  :disabled="processing"
+                  size="xs"
+                  bg-color="error"
+                  :padding-x="2"
+                  :padding-y="1"
+                  @click="clearClientCert"
+                >Clear</ui-btn>
+              </template>
+            </div>
+          </div>
+          <!-- end mTLS selection -->
         </form>
         <!-- username/password and auth methods -->
         <template v-else>
@@ -109,7 +149,9 @@ export default {
         address: null,
         version: null,
         username: null,
-        customHeaders: null
+        customHeaders: null,
+        // mTLS Android system client certificate alias (optional)
+         clientCertAlias: null
       },
       password: null,
       error: null,
@@ -453,6 +495,10 @@ export default {
       this.serverConfig = {
         ...config
       }
+      // Re-enable mTLS client cert if alias present
+      if (this.serverConfig.clientCertAlias && this.$systemMtlsHttp && this.$systemMtlsHttp.supported()) {
+        this.$systemMtlsHttp.enable(this.serverConfig.clientCertAlias).catch(() => {})
+      }
       this.showForm = true
       var success = await this.pingServerAddress(config.address)
       this.processing = false
@@ -507,6 +553,9 @@ export default {
     async editServerConfig(serverConfig) {
       this.serverConfig = {
         ...serverConfig
+      }
+      if (this.serverConfig.clientCertAlias && this.$systemMtlsHttp && this.$systemMtlsHttp.supported()) {
+        this.$systemMtlsHttp.enable(this.serverConfig.clientCertAlias).catch(() => {})
       }
 
       if (await this.submit(true)) {
@@ -563,14 +612,82 @@ export default {
      * @throws {Error} An error with 'code' property set to the HTTP status code if the response is not successful.
      * @throws {Error} An error with 'code' property set to the error code if the request fails.
      */
+    // Timeout-enabled wrapper for system mTLS GET
+    mtlsGet(url, headers = {}, timeoutMs = 8000) {
+      return new Promise((resolve, reject) => {
+        let settled = false
+        const timer = setTimeout(() => {
+          if (settled) return
+          settled = true
+          const err = new Error('Request timed out')
+          err.code = 'TIMEOUT'
+          reject(err)
+        }, timeoutMs)
+        this.$systemMtlsHttp.get(url, headers)
+          .then((res) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve({ status: res.status, data: res.data, url })
+          })
+          .catch((err) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            reject(err)
+          })
+      })
+    },
+    // Timeout-enabled wrapper for system mTLS POST
+    mtlsPost(url, body = {}, headers = {}, timeoutMs = 8000) {
+      return new Promise((resolve, reject) => {
+        let settled = false
+        const timer = setTimeout(() => {
+          if (settled) return
+            settled = true
+            const err = new Error('Request timed out')
+            err.code = 'TIMEOUT'
+            reject(err)
+        }, timeoutMs)
+        this.$systemMtlsHttp.post(url, body, headers)
+          .then((res) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            resolve({ status: res.status, data: res.data, url })
+          })
+          .catch((err) => {
+            if (settled) return
+            settled = true
+            clearTimeout(timer)
+            reject(err)
+          })
+      })
+    },
     async getRequest(url, headers, connectTimeout = 6000) {
+      const useMtls = this.serverConfig.clientCertAlias && this.$systemMtlsHttp && this.$systemMtlsHttp.supported()
+      if (false) {
+        // Early return for mTLS path with timeout
+        try {
+          const response = await this.mtlsGet(url, headers || {}, connectTimeout)
+          if (response.status === 200) return response
+          const err = new Error(typeof response.data === 'string' ? response.data : 'HTTP error')
+          err.code = response.status
+          throw err
+        } catch (e) {
+          throw e
+        }
+      }
+      console.info('[getRequest] entered')
       const options = {
         url,
         headers,
         connectTimeout
       }
       try {
+        console.info('[getRequest] try entered')
         const response = await CapacitorHttp.get(options)
+        console.info('[getRequest] get returned')
         console.log('[ServerConnectForm] GET request response', response)
         if (response.status == 200) {
           return response
@@ -581,6 +698,7 @@ export default {
           throw errorObj
         }
       } catch (error) {
+        console.info('[getRequest] catch entered')
         // Put the error name inside the cause (a string)
         let errorObj = new Error(error.message)
         errorObj.code = error.code
@@ -588,6 +706,17 @@ export default {
       }
     },
     async postRequest(url, data, headers, connectTimeout = 6000) {
+      const useMtls = this.serverConfig.clientCertAlias && this.$systemMtlsHttp && this.$systemMtlsHttp.supported()
+      if (useMtls) {
+        if (!headers) headers = {}
+        if (!headers['Content-Type'] && data) headers['Content-Type'] = 'application/json'
+        const response = await this.mtlsPost(url, data || {}, headers, connectTimeout)
+        if (response.status >= 400) {
+          throw new Error(typeof response.data === 'string' ? response.data : JSON.stringify(response.data))
+        }
+        return response.data
+      }
+
       if (!headers) headers = {}
       if (!headers['Content-Type'] && data) {
         headers['Content-Type'] = 'application/json'
@@ -614,6 +743,7 @@ export default {
      *    HttpResponse.data is {isInit:boolean, language:string, authMethods:string[]}>
      */
     async getServerAddressStatus(address) {
+      console.info('[getServerAddressStatus] entered')
       return this.getRequest(`${address}/status`)
     },
     pingServerAddress(address, customHeaders) {
@@ -657,6 +787,33 @@ export default {
           return false
         })
     },
+    // mTLS selection methods (re-added)
+    async selectClientCert() {
+      if (!this.$systemMtlsHttp || !this.$systemMtlsHttp.supported()) return
+      try {
+        const alias = await this.$systemMtlsHttp.pickCertificate()
+        await this.$systemMtlsHttp.enable(alias)
+        this.serverConfig.clientCertAlias = alias
+        if (this.serverConfig.id) {
+          await this.$db.setServerConnectionConfig(this.serverConfig)
+        }
+      } catch (e) {
+        console.warn('[ServerConnectForm] selectClientCert failed', e)
+        this.$toast.error(e.message || 'Failed selecting client certificate')
+      }
+    },
+    async reselectClientCert() {
+      await this.selectClientCert()
+    },
+    async clearClientCert() {
+      try {
+        if (this.$systemMtlsHttp?.alias) await this.$systemMtlsHttp.disable()
+      } catch (_) {}
+      this.serverConfig.clientCertAlias = null
+      if (this.serverConfig.id) {
+        await this.$db.setServerConnectionConfig(this.serverConfig)
+      }
+    },
     async submit(preventAutoLogin = false) {
       if (!this.networkConnected || !this.serverConfig.address) return false
 
@@ -671,9 +828,10 @@ export default {
       this.authMethods = []
 
       try {
-        console.log('[ServerConnectForm] submit tryServerUrl: ' + this.serverConfig.address)
+        console.log('[ServerConnectForm] submit xxx tryServerUrl: ' + this.serverConfig.address)
         // Try the server URL. If it fails and the protocol was not provided, try with http instead of https
         const statusData = await this.tryServerUrl(this.serverConfig.address, !protocolProvided)
+        console.log('[ServerConnectForm] tryServerUrl returned' + JSON.stringify(statusData))
         if (this.validateLoginFormResponse(statusData, this.serverConfig.address, protocolProvided)) {
           this.showAuth = true
           this.authMethods = statusData.data.authMethods || []
@@ -689,6 +847,7 @@ export default {
           return false
         }
       } catch (error) {
+        console.error('[ServerConnectForm] submit there was an error.')
         this.handleLoginFormError(error)
         return false
       } finally {
@@ -761,7 +920,7 @@ export default {
      * @param {Object} error - The error object received from a failed login attempt.
      */
     handleLoginFormError(error) {
-      console.error('[ServerConnectForm] Received invalid status', error)
+      console.error('[ServerConnectForm] Received invalid status', error.toString() )
 
       if (error.code === 404) {
         this.error = `This does not seem to be an Audiobookshelf server. (Error: 404 querying /status)`
@@ -790,8 +949,11 @@ export default {
       }
 
       try {
-        return await this.getServerAddressStatus(validatedUrl)
+        const variable = await this.getServerAddressStatus(validatedUrl)
+        console.log('[ServerConnectForm] tryServerUrl returned...')
+        return variable
       } catch (error) {
+        console.log('[ServerConnectForm] (tryServerUrl) Failed...')
         // We only retry when the user did not specify a protocol
         // Also for security reasons, we only retry when the https request did not
         //      return a http status code (so only retry when the TCP connection could not be established)
@@ -970,6 +1132,11 @@ export default {
   mounted() {
     this.$eventBus.$on('url-open', this.appUrlOpen)
     this.init()
+
+    // Re-enable mTLS if alias present and plugin available
+    if (this.serverConfig.clientCertAlias && this.$systemMtlsHttp && this.$systemMtlsHttp.supported()) {
+      this.$systemMtlsHttp.enable(this.serverConfig.clientCertAlias).catch(() => {})
+    }
   },
   beforeDestroy() {
     this.$eventBus.$off('url-open', this.appUrlOpen)
