@@ -272,6 +272,7 @@ class ApiHandler(var ctx:Context) {
       DeviceManager.serverConnectionConfig = null
       DeviceManager.deviceData.lastServerConnectionConfigId = null
       DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
+      MtlsManager.reset()
       if (checkAbsDatabaseNotifyListenersInitted()) {
         absDatabaseNotifyListeners(
                 "onTokenRefreshFailure",

@@ -63,20 +63,30 @@ object MtlsManager {
     appContext = context.applicationContext
   }
 
+  @Synchronized
   private fun currentAlias(): String? = DeviceManager.serverConnectionConfig?.clientCertAlias ?: pendingAlias
 
   /** Alias currently in effect, for display purposes (e.g. the settings/connect UI). */
+  @Synchronized
   fun getEffectiveAlias(): String? = currentAlias()
 
   /** Records a certificate chosen before any ServerConnectionConfig exists yet. */
+  @Synchronized
   fun setPendingAlias(alias: String?) {
     pendingAlias = alias
+  }
+
+  /** Discards a pending alias without adopting it, e.g. when an in-progress "add server" flow is abandoned. */
+  @Synchronized
+  fun clearPendingAlias() {
+    pendingAlias = null
   }
 
   /**
    * Moves a pending alias (selected before [config] existed) onto it. Returns true if [config]
    * was changed, so the caller knows whether it needs persisting.
    */
+  @Synchronized
   fun adoptPendingAlias(config: ServerConnectionConfig): Boolean {
     val alias = pendingAlias ?: return false
     pendingAlias = null
@@ -185,6 +195,24 @@ object MtlsManager {
       wrappedClients.clear()
     }
     refreshGlobalDefault()
+  }
+
+  /**
+   * Fully clears any client-certificate state - including a not-yet-adopted pending alias - and
+   * restores the JVM-wide default SSL socket factory to its original, pre-mTLS value. Call
+   * whenever the active server connection config is cleared (logout, removing the config, a
+   * rejected refresh) so a certificate doesn't keep being presented to unrelated connections made
+   * afterwards.
+   */
+  @Synchronized
+  fun reset() {
+    pendingAlias = null
+    cachedAlias = null
+    cachedSslContext = null
+    wrappedClients.clear()
+    if (::appContext.isInitialized) {
+      HttpsURLConnection.setDefaultSSLSocketFactory(systemDefaultSslSocketFactory ?: HttpsURLConnection.getDefaultSSLSocketFactory())
+    }
   }
 
   /**

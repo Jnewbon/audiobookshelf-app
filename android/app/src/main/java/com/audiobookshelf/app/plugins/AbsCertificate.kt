@@ -8,6 +8,9 @@ import com.getcapacitor.Plugin
 import com.getcapacitor.PluginCall
 import com.getcapacitor.PluginMethod
 import com.getcapacitor.annotation.CapacitorPlugin
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.GlobalScope
+import kotlinx.coroutines.launch
 
 /**
  * Lets the frontend manage the mTLS client certificate (from the Android system KeyChain) used
@@ -33,15 +36,24 @@ class AbsCertificate : Plugin() {
    * Opens the Android system certificate picker. Usable both before a server connection exists
    * (e.g. on the "add new server" form - the alias is held pending until the connection config is
    * created) and afterwards (persisted directly onto the current config).
+   *
+   * [call]'s optional "serverConnectionConfigId" identifies the config the frontend is currently
+   * presenting this selection for. DeviceManager.serverConnectionConfig is a single global
+   * "active config" pointer that a background path (e.g. Android Auto media browsing) can
+   * reassign independently of the foreground UI, so the alias is only persisted directly onto it
+   * when its id matches - otherwise it's staged as pending, same as when no config exists yet.
    */
   @PluginMethod
   fun selectClientCertificate(call: PluginCall) {
+    val targetConfigId = call.getString("serverConnectionConfigId")?.takeIf { it.isNotBlank() }
     MtlsManager.chooseCertificateAlias(mainActivity) { alias ->
       if (alias != null) {
         val config = DeviceManager.serverConnectionConfig
-        if (config != null) {
+        if (targetConfigId != null && config?.id == targetConfigId) {
           config.clientCertAlias = alias
-          DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
+          // The KeyChain picker's result callback runs on the main thread (see
+          // MtlsManager.chooseCertificateAlias), so this disk write must not run inline.
+          GlobalScope.launch(Dispatchers.IO) { DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData) }
         } else {
           MtlsManager.setPendingAlias(alias)
         }
@@ -53,12 +65,27 @@ class AbsCertificate : Plugin() {
     }
   }
 
+  /**
+   * Discards a certificate alias staged via selectClientCertificate before any
+   * ServerConnectionConfig existed, without adopting it onto one. Call when an in-progress
+   * "add new server" attempt is abandoned (e.g. backing out to the server list, or starting to
+   * add a different server), so the staged alias doesn't get attached to whatever config is
+   * created/connected next.
+   */
+  @PluginMethod
+  fun clearPendingCertificate(call: PluginCall) {
+    MtlsManager.clearPendingAlias()
+    call.resolve()
+  }
+
   @PluginMethod
   fun clearClientCertificate(call: PluginCall) {
+    val targetConfigId = call.getString("serverConnectionConfigId")?.takeIf { it.isNotBlank() }
     MtlsManager.setPendingAlias(null)
-    DeviceManager.serverConnectionConfig?.let { config ->
+    val config = DeviceManager.serverConnectionConfig
+    if (targetConfigId != null && config?.id == targetConfigId) {
       config.clientCertAlias = null
-      DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
+      GlobalScope.launch(Dispatchers.IO) { DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData) }
     }
     MtlsManager.onCertificateAliasChanged()
     call.resolve()

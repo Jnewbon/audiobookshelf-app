@@ -206,6 +206,7 @@ class AbsDatabase : Plugin() {
       DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
       if (DeviceManager.serverConnectionConfig?.id == serverConnectionConfigId) {
         DeviceManager.serverConnectionConfig = null
+        MtlsManager.reset()
       }
       call.resolve()
     }
@@ -253,6 +254,7 @@ class AbsDatabase : Plugin() {
       DeviceManager.serverConnectionConfig = null
       DeviceManager.deviceData.lastServerConnectionConfigId = null
       DeviceManager.dbManager.saveDeviceData(DeviceManager.deviceData)
+      MtlsManager.reset()
       call.resolve()
     }
   }

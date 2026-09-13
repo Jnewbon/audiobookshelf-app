@@ -13,6 +13,10 @@ class AbsCertificateWeb extends WebPlugin {
     return {}
   }
 
+  async clearPendingCertificate() {
+    return {}
+  }
+
   async setActiveCertificateAlias() {
     return {}
   }

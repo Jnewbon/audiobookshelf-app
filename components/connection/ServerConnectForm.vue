@@ -41,7 +41,7 @@
           <ui-text-input v-model="serverConfig.address" :disabled="processing || !networkConnected || !!serverConfig.id" placeholder="http://55.55.55.55:13378" type="url" class="w-full h-10" />
           <div v-if="$platform === 'android'" class="flex items-center mt-3 text-xs text-fg-muted" @click="selectClientCertificate">
             <span class="material-symbols mr-1" style="font-size: 1rem">{{ clientCertAlias ? 'verified_user' : 'admin_panel_settings' }}</span>
-            <p class="grow">{{ clientCertAlias ? `Client certificate selected` : `Client certificate (optional)` }}</p>
+            <p class="grow">{{ clientCertAlias ? $strings.LabelClientCertificateSelected : $strings.LabelClientCertificateOptional }}</p>
             <ui-btn v-if="clientCertAlias" class="text-xs" :padding-x="2" :padding-y="1" type="button" @click.stop="clearClientCertificate">{{ $strings.ButtonRemove }}</ui-btn>
           </div>
           <div class="flex justify-end items-center mt-6">
@@ -61,7 +61,7 @@
           </div>
           <div v-if="$platform === 'android'" class="flex items-center mt-2 text-xs text-fg-muted" @click="selectClientCertificate">
             <span class="material-symbols mr-1" style="font-size: 1rem">{{ clientCertAlias ? 'verified_user' : 'admin_panel_settings' }}</span>
-            <p class="grow">{{ clientCertAlias ? `Client certificate selected` : `Client certificate (optional)` }}</p>
+            <p class="grow">{{ clientCertAlias ? $strings.LabelClientCertificateSelected : $strings.LabelClientCertificateOptional }}</p>
             <ui-btn v-if="clientCertAlias" class="text-xs" :padding-x="2" :padding-y="1" type="button" @click.stop="clearClientCertificate">{{ $strings.ButtonRemove }}</ui-btn>
           </div>
           <div class="w-full h-px bg-fg/10 my-2" />
@@ -86,7 +86,7 @@
         <p class="text-error">{{ error }}</p>
       </div>
       <div v-if="needsClientCertificate" class="my-1 py-2 w-full">
-        <ui-btn class="w-full" :disabled="processing" @click="selectClientCertificateAndRetry">Select Client Certificate</ui-btn>
+        <ui-btn class="w-full" :disabled="processing" @click="selectClientCertificateAndRetry">{{ $strings.ButtonSelectClientCertificate }}</ui-btn>
       </div>
     </div>
 
@@ -459,11 +459,14 @@ export default {
       this.showForm = false
       this.showAuth = false
       this.error = null
+      this.needsClientCertificate = false
+      this.retryConnectConfig = null
       this.serverConfig = {
         address: null,
         userId: null,
         username: null
       }
+      if (this.$platform === 'android') AbsCertificate.clearPendingCertificate()
     },
     async connectToServer(config) {
       await this.$hapticsImpact()
@@ -493,6 +496,10 @@ export default {
       if (payload) {
         // Will NOT include access token and refresh token
         this.setUserAndConnection(payload)
+      } else if (this.needsClientCertificate) {
+        this.retryConnectConfig = config
+        this.showForm = false
+        this.showAuth = false
       } else {
         let error = this.error
         if (await this.submit(true)) {
@@ -526,6 +533,9 @@ export default {
         this.showAuth = false
         this.showForm = !this.serverConnectionConfigs.length
         this.error = null
+        this.needsClientCertificate = false
+        this.clientCertAlias = null
+        if (this.retryConnectConfig?.id === serverConfig.id) this.retryConnectConfig = null
       }
     },
     async editServerConfig(serverConfig) {
@@ -548,6 +558,10 @@ export default {
       this.showForm = true
       this.showAuth = false
       this.error = null
+      this.needsClientCertificate = false
+      this.retryConnectConfig = null
+      this.clientCertAlias = null
+      if (this.$platform === 'android') AbsCertificate.clearPendingCertificate()
     },
     editServerAddress() {
       this.error = null
@@ -651,7 +665,7 @@ export default {
           console.error('Server ping failed', error)
           this.needsClientCertificate = this.$platform === 'android' && this.isCertificateError(error)
           if (this.needsClientCertificate) {
-            this.error = `This server requires a client certificate to connect. Select one installed on this device to continue.`
+            this.error = this.$strings.MessageServerRequiresClientCertificate
           } else {
             const errorMsg = error.message || error
             this.error = 'Failed to ping server'
@@ -803,7 +817,7 @@ export default {
       if (error.code === 404) {
         this.error = `This does not seem to be an Audiobookshelf server. (Error: 404 querying /status)`
       } else if (this.needsClientCertificate) {
-        this.error = `This server requires a client certificate to connect. Select one installed on this device to continue.`
+        this.error = this.$strings.MessageServerRequiresClientCertificate
       } else if (typeof error.code === 'number') {
         // Error with HTTP Code
         this.error = `Failed to retrieve status of server: ${error.code}`
@@ -828,7 +842,10 @@ export default {
     async selectClientCertificate() {
       await this.$hapticsImpact()
       try {
-        const result = await AbsCertificate.selectClientCertificate()
+        // Tells native which config (if any) this selection is for, so it isn't written onto
+        // whatever config happens to be globally "active" (e.g. one a background Android Auto
+        // media-browsing ping switched to) if that differs from the one being edited here
+        const result = await AbsCertificate.selectClientCertificate({ serverConnectionConfigId: this.serverConfig.id || null })
         this.clientCertAlias = result?.alias || this.clientCertAlias
       } catch (error) {
         console.error('[ServerConnectForm] Failed to select client certificate', error)
@@ -837,7 +854,7 @@ export default {
     async clearClientCertificate() {
       await this.$hapticsImpact()
       try {
-        await AbsCertificate.clearClientCertificate()
+        await AbsCertificate.clearClientCertificate({ serverConnectionConfigId: this.serverConfig.id || null })
         this.clientCertAlias = null
       } catch (error) {
         console.error('[ServerConnectForm] Failed to clear client certificate', error)
@@ -896,7 +913,10 @@ export default {
         // We only retry when the user did not specify a protocol
         // Also for security reasons, we only retry when the https request did not
         //      return a http status code (so only retry when the TCP connection could not be established)
-        if (shouldRetryWithHttp && typeof error.code !== 'number') {
+        // A certificate/handshake error is never worth retrying over plain http - it wouldn't
+        // succeed, and doing so would discard the original error before it can be recognized as
+        // needing a client certificate
+        if (shouldRetryWithHttp && typeof error.code !== 'number' && !this.isCertificateError(error)) {
           console.log('[ServerConnectForm] https failed, trying to connect with http...')
           const validatedHttpUrl = this.validateServerUrl(address, 'http:')
           if (validatedHttpUrl) {
@@ -1022,10 +1042,15 @@ export default {
       }
       const authRes = await this.$nativeHttp.post(`${this.serverConfig.address}/api/authorize`, null, nativeHttpOptions).catch((error) => {
         console.error('[ServerConnectForm] Server auth failed', error)
-        const errorMsg = error.message || error
-        this.error = 'Failed to authorize'
-        if (typeof errorMsg === 'string') {
-          this.error += ` (${errorMsg})`
+        this.needsClientCertificate = this.$platform === 'android' && this.isCertificateError(error)
+        if (this.needsClientCertificate) {
+          this.error = this.$strings.MessageServerRequiresClientCertificate
+        } else {
+          const errorMsg = error.message || error
+          this.error = 'Failed to authorize'
+          if (typeof errorMsg === 'string') {
+            this.error += ` (${errorMsg})`
+          }
         }
         return false
       })
